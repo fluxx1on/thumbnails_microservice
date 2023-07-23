@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package thumbnails;
+
+option go_package = "github.com/fluxx1on/thumbnails_microservice/grpc/proto";
+
+service ThumbnailService {
+  rpc ListThumbnail(ListThumbnailRequest) returns (ListThumbnailResponse) {
+    
+  }
+
+  rpc GetThumbnail(GetThumbnailRequest) returns (ThumbnailResponse) {
+    
+  }
+}
+
+message GetThumbnailRequest {
+  string url = 1;
+}
+
+message ListThumbnailRequest {
+  repeated GetThumbnailRequest Requests = 1;
+}
+
+message Thumbnail {
+  string id = 1;
+  string url = 2;
+  string channelTitle = 3;
+  string title = 4;
+  int32 width = 5;
+  int32 height = 6;
+  bytes file = 7;
+}
+
+message ErrorResponse {
+  string url = 1;
+  string error_message = 2;
+}
+
+message ThumbnailResponse {
+  oneof content {
+    Thumbnail thumbnail = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+message ListThumbnailResponse {
+  repeated ThumbnailResponse Thumbnails = 1;
+}
