@@ -10,11 +10,25 @@ generate:
 set_environment:
 	echo "ROOT_DIR=\"$(pwd)/\"" >> .env
 	echo "MEDIA_DIR=\"$(pwd)/media/\"" >> .env
+	echo "LOG_FILE=\"$(pwd)/service_log.log\"" >> .env
+
+setup: 
+	go mod tidy
+	make generate
+	make set_environment
+
+test:
+	go test -v -count=1  ./...
+
+.PHONY: cover
+cover:
+	go test -short -count=1 -race -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out
+	rm coverage.out
 
 build:
 	mkdir -p bin
 	go build -C cmd -o ../bin/server
-	./bin/server
 
-run:
-	make build
+run: build
+	./bin/server
