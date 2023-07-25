@@ -1,6 +1,7 @@
 package youtube
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 
@@ -13,6 +14,9 @@ func GetImage(url string) (serial.ThumbnailData, error) {
 		return nil, err
 	}
 
-	body, err := io.ReadAll(response.Body)
-	return body, err
+	if response.StatusCode == 200 {
+		body, err := io.ReadAll(response.Body)
+		return body, err
+	}
+	return nil, fmt.Errorf("status code: %d", response.StatusCode)
 }

@@ -19,23 +19,6 @@ type Item struct {
 	Snippet SnippetSerializer `json:"snippet"`
 }
 
-func (item *Item) IsNotEmpty() bool {
-	return !(item.Id == "")
-}
-
-type ListVideoSerializer struct {
-	Items []Item `json:"items"`
-}
-
-func (listV *ListVideoSerializer) IsNotEmpty() bool {
-	return !(len(listV.Items) == 0)
-}
-
-type Video struct {
-	I    *Item
-	Data ThumbnailData
-}
-
 func (i *Item) GetId() string {
 	return i.Id
 }
@@ -58,6 +41,22 @@ func (i *Item) GetWidth() int32 {
 
 func (i *Item) GetHeight() int32 {
 	return i.Snippet.Thumbnails.Maxres.Height
+}
+
+type ListVideoSerializer struct {
+	Items []Item `json:"items"`
+}
+
+func (l *ListVideoSerializer) IsEmpty() bool {
+	if l.Items == nil {
+		return true
+	}
+	return len(l.Items) == 0
+}
+
+type Video struct {
+	I    *Item
+	Data ThumbnailData
 }
 
 func (video *Video) GetData() ThumbnailData {

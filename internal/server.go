@@ -11,17 +11,18 @@ import (
 	// Current module
 	"github.com/fluxx1on/thumbnails_microservice/cmd/config"
 	"github.com/fluxx1on/thumbnails_microservice/external/youtube"
+	"github.com/fluxx1on/thumbnails_microservice/internal/cache"
 	igrpc "github.com/fluxx1on/thumbnails_microservice/internal/grpc"
 	"github.com/fluxx1on/thumbnails_microservice/internal/grpc/proto"
+	"github.com/fluxx1on/thumbnails_microservice/internal/routing"
 	"github.com/fluxx1on/thumbnails_microservice/internal/scheduler"
-	"github.com/fluxx1on/thumbnails_microservice/libs/logger/attrs"
 	"github.com/go-redis/redis"
 )
 
 type GRPC struct {
 	listener  net.Listener
 	server    *grpc.Server
-	Scheduler *scheduler.CacheQueue
+	scheduler *scheduler.CacheQueue
 }
 
 func (g *GRPC) StartUp(cfg *config.Config, RedisConn *redis.Client) {
@@ -38,14 +39,17 @@ func (g *GRPC) StartUp(cfg *config.Config, RedisConn *redis.Client) {
 	g.server = grpc.NewServer()
 	reflection.Register(g.server)
 
+	// RedisQuery caching setup
+	CacheClient := cache.NewRedisQuery(context.Background(), RedisConn)
+
 	// Scheduler setup
-	CacheClient := scheduler.NewCacheQueue(context.Background(), RedisConn)
-	g.Scheduler = CacheClient
+	CacheScheduler := scheduler.NewCacheQueue(context.Background(), CacheClient)
+	g.scheduler = CacheScheduler
 
 	// GRPCThumbnailService setup
-	uAPI := youtube.NewYouTubeAPIClient(cfg.YouTube) // YouTubeAPI init
-	srv := igrpc.NewGRPCThumbnailService(igrpc.NewThumbnailFetchService(
-		CacheClient, uAPI,
+	uAPI := youtube.NewAPIClient(cfg.YouTube) // YouTubeAPI init
+	srv := igrpc.NewThumbnailService(routing.NewThumbnailFetchService(
+		CacheScheduler, uAPI,
 	))
 	proto.RegisterThumbnailServiceServer(g.server, srv)
 
@@ -57,14 +61,14 @@ func (g *GRPC) StartUp(cfg *config.Config, RedisConn *redis.Client) {
 	}()
 
 	// Start consumer
-	go g.Scheduler.JobRunning()
+	go g.scheduler.JobRunning()
 
-	slog.Info("gRPC server started on address:", attrs.Any(cfg.ServerAddress))
+	slog.Info("gRPC server started on address:", cfg.ServerAddress)
 }
 
 func (g *GRPC) Stop() {
-	if g.Scheduler != nil {
-		g.Scheduler.ShutdownJob()
+	if g.scheduler != nil {
+		g.scheduler.ShutdownJob()
 	}
 	g.server.Stop()
 	g.listener.Close()

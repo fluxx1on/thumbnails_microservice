@@ -25,7 +25,13 @@ func main() {
 	cfg := config.Setup()
 
 	// Logger
-	log := slog.New(handler.NewColorfulHandler(baseLog.Default().Writer()))
+	log := slog.New(handler.NewColorfulHandler(
+		baseLog.Default().Writer(),
+		cfg.Logger.Logfile,
+		&slog.HandlerOptions{
+			Level: cfg.Logger.LevelInfo,
+		},
+	))
 	slog.SetDefault(log)
 
 	// Redis

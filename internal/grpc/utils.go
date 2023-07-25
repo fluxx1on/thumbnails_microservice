@@ -7,17 +7,16 @@ import (
 )
 
 // GetResponseStat count sum of errors and correct Thumbnails.
-// GetResponseStat used by logger to check the traffic.
+// Used by gRPC service to check and log the traffic.
 func GetResponseStat(srcList ...*proto.ThumbnailResponse) string {
 	var (
 		thumbCounter, errorCounter int = 0, 0
 	)
 
 	for _, resp := range srcList {
-		if _, is := resp.GetContent().(*proto.ThumbnailResponse_Thumbnail); is {
+		if thumb := resp.GetThumbnail(); thumb != nil {
 			thumbCounter++
-		}
-		if _, is := resp.GetContent().(*proto.ThumbnailResponse_Error); is {
+		} else if err := resp.GetError(); err != nil {
 			errorCounter++
 		}
 	}

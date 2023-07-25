@@ -1,15 +1,19 @@
-package grpc
+package routing
 
 import (
 	"context"
 	"fmt"
 
 	"github.com/fluxx1on/thumbnails_microservice/external/youtube"
+	"github.com/fluxx1on/thumbnails_microservice/internal/cache"
 	"github.com/fluxx1on/thumbnails_microservice/internal/grpc/proto"
 	"github.com/fluxx1on/thumbnails_microservice/internal/scheduler"
-	"github.com/fluxx1on/thumbnails_microservice/libs/cache"
 	"github.com/fluxx1on/thumbnails_microservice/libs/utils"
 	"golang.org/x/exp/slog"
+)
+
+const (
+	ErrDownloadVideo = "Downloading failed; video no exist"
 )
 
 type ThumbnailFetcher interface {
@@ -17,18 +21,24 @@ type ThumbnailFetcher interface {
 	FetchThumbnailList(context.Context, *proto.ListThumbnailRequest) ([]*proto.ThumbnailResponse, error)
 }
 
+var _ ThumbnailFetcher = (*ThumbnailFetchService)(nil)
+
 type ThumbnailFetchService struct {
-	cache     *scheduler.CacheQueue
-	apiClient *youtube.YouTubeAPIClient
+	cacheQ    *scheduler.CacheQueue
+	apiClient *youtube.APIClient
 }
 
 func NewThumbnailFetchService(cache *scheduler.CacheQueue,
-	apiClient *youtube.YouTubeAPIClient) *ThumbnailFetchService {
+	apiClient *youtube.APIClient) *ThumbnailFetchService {
 
 	return &ThumbnailFetchService{
-		cache:     cache,
+		cacheQ:    cache,
 		apiClient: apiClient,
 	}
+}
+
+func (t *ThumbnailFetchService) getCacheClient() *cache.RedisQuery {
+	return t.cacheQ.GetCacheClient()
 }
 
 // cacheProducer is a producer for CacheQueue
@@ -44,52 +54,46 @@ func (t *ThumbnailFetchService) cacheProducer(ctx context.Context, videoList ...
 		thumbnailList = append(thumbnailList, resp.GetThumbnail())
 	}
 
-	t.cache.PutQueue(thumbnailList...)
+	t.cacheQ.PutQueue(thumbnailList...)
 }
 
+// FetchThumbnailList is intermediate node that gather all Thumbnails from cache or API
 func (t *ThumbnailFetchService) FetchThumbnailList(ctx context.Context, reqList *proto.ListThumbnailRequest) (
 	[]*proto.ThumbnailResponse, error) {
 	var (
 		thumbResponse = make([]*proto.ThumbnailResponse, 0, len(reqList.GetRequests()))
-		cacheListId   = make([]string, 0, len(reqList.GetRequests()))
+		cacheListID   = make([]string, 0, len(reqList.GetRequests()))
 	)
 
+	// Validate requested URLs
+	// By Error append ErrorResponse
 	for _, value := range reqList.GetRequests() {
-		id, err := youtube.GetQueryId(value.GetUrl())
+		id, err := GetQueryID(value.GetUrl())
 		if err != nil {
-			// Append errors
 			thumbResponse = append(thumbResponse,
-				utils.NewErrorThumbnailResponse(value.GetUrl(), fmt.Errorf("url format is incorrect")))
+				utils.NewErrorThumbnailResponse(value.GetUrl(), id))
 		} else {
-			cacheListId = append(cacheListId, id)
+			cacheListID = append(cacheListID, id)
 		}
 	}
 
-	cachedThumbnails, apiListId, err := cache.GetVideoPool(t.cache.CacheClient, cacheListId...)
-	if err != nil {
-		slog.Error(err.Error())
-	} else {
-		// Append thumbnails
-		thumbResponse = append(thumbResponse, cachedThumbnails...)
-	}
+	// Append cached ThumbnailReponses from Redis and filesystem
+	cachedThumbnails, apiListID := t.getCacheClient().GetSeries(ctx, cacheListID...)
+	thumbResponse = append(thumbResponse, cachedThumbnails...)
 
-	apiThumbnails, errListId, err := t.apiClient.GetVideoThumbnail(ctx, apiListId...)
-	if err != nil {
-		slog.Error(err.Error())
-	} else {
-
+	// Append ThumbnailResponses from youtube API
+	apiThumbnails, errListID := t.apiClient.GetVideoThumbnail(ctx, apiListID...)
+	if apiThumbnails != nil {
 		// Try to caching
 		t.cacheProducer(ctx, apiThumbnails...)
 
-		// Append thumbnails
 		thumbResponse = append(thumbResponse, apiThumbnails...)
-
 	}
 
-	for _, url := range errListId {
-		// Append errors
+	// Incorrect Video IDs; Append ErrorResponses
+	for _, url := range errListID {
 		thumbResponse = append(thumbResponse,
-			utils.NewErrorThumbnailResponse(url, fmt.Errorf("downloading failed; video no exist")))
+			utils.NewErrorThumbnailResponse(url, ErrDownloadVideo))
 	}
 
 	if len(thumbResponse) == 0 {
@@ -98,36 +102,35 @@ func (t *ThumbnailFetchService) FetchThumbnailList(ctx context.Context, reqList 
 	return thumbResponse, nil
 }
 
+// FetchThumbnail is intermediate node that gather all Thumbnails from cache or API
 func (t *ThumbnailFetchService) FetchThumbnail(ctx context.Context, req *proto.GetThumbnailRequest) (
 	*proto.ThumbnailResponse, error) {
 
-	// It gets video id
-	// Return Error response by incorrect url query parameters
-	id, err := youtube.GetQueryId(req.GetUrl())
+	// It gets video ID
+	// Return ErrorResponse by incorrect url query parameters
+	id, err := GetQueryID(req.GetUrl())
 	if err != nil {
-		return utils.NewErrorThumbnailResponse(req.GetUrl(), fmt.Errorf("url format is incorrect")), nil
+		return utils.NewErrorThumbnailResponse(req.GetUrl(), id), nil
 	}
 
 	// Return Cached response
-	cachedThumbnail := cache.GetVideo(t.cache.CacheClient, id)
+	cachedThumbnail := t.getCacheClient().Get(ctx, id)
 	if cachedThumbnail != nil {
 		return cachedThumbnail, nil
 	}
 
-	// Return response from youtube API
-	apiThumbnail, errListId, err := t.apiClient.GetVideoThumbnail(ctx, id)
-	if err != nil {
-		slog.Error(err.Error())
-	} else if apiThumbnail != nil {
+	// Return ThumbnailResponse from youtube API
+	apiThumbnail, errListID := t.apiClient.GetVideoThumbnail(ctx, id)
+	if apiThumbnail != nil {
 		// Try to caching
 		t.cacheProducer(ctx, apiThumbnail...)
 
 		return apiThumbnail[0], nil
-
 	}
 
-	if errListId != nil {
-		return utils.NewErrorThumbnailResponse(id, fmt.Errorf("downloading failed; video no exist")), nil
+	// Nothing finded; Return ErrorResponse
+	if errListID != nil {
+		return utils.NewErrorThumbnailResponse(id, ErrDownloadVideo), nil
 	}
 
 	return nil, fmt.Errorf("nothing to response")

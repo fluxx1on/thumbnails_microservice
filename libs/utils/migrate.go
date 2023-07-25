@@ -6,19 +6,18 @@ import (
 	"github.com/fluxx1on/thumbnails_microservice/external/serial"
 	"github.com/fluxx1on/thumbnails_microservice/internal/grpc/proto"
 	"github.com/go-redis/redis"
-	"golang.org/x/exp/slog"
 )
 
 var (
 	curDir = "/libs/utils"
 )
 
-func NewErrorThumbnailResponse(url string, err error) *proto.ThumbnailResponse {
+func NewErrorThumbnailResponse(url string, err string) *proto.ThumbnailResponse {
 	return &proto.ThumbnailResponse{
 		Content: &proto.ThumbnailResponse_Error{
 			Error: &proto.ErrorResponse{
 				Url:          url,
-				ErrorMessage: err.Error(),
+				ErrorMessage: err,
 			},
 		},
 	}
@@ -27,12 +26,14 @@ func NewErrorThumbnailResponse(url string, err error) *proto.ThumbnailResponse {
 func cachedThumbnailResponse(args *redis.StringStringMapCmd) *proto.ThumbnailResponse {
 	values := args.Val()
 
-	width, _ := strconv.Atoi(values["width"])
-	height, _ := strconv.Atoi(values["height"])
+	width, err1 := strconv.Atoi(values["width"])
+	height, err2 := strconv.Atoi(values["height"])
+	if err1 != nil || err2 != nil {
+		return nil
+	}
 
-	data, err := ReadMediaFile(values["id"])
-	if err != nil {
-		slog.Debug(err.Error())
+	data := ReadMediaFile(values["id"])
+	if data == nil {
 		return nil
 	}
 

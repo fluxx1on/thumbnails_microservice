@@ -4,24 +4,24 @@ import (
 	"context"
 
 	"github.com/fluxx1on/thumbnails_microservice/internal/grpc/proto"
-	"github.com/fluxx1on/thumbnails_microservice/libs/logger/attrs"
+	"github.com/fluxx1on/thumbnails_microservice/internal/routing"
 	"golang.org/x/exp/slog"
 )
 
-type GRPCThumbnailService struct {
+type ThumbnailService struct {
 	// Implements
 	proto.UnimplementedThumbnailServiceServer
 
-	f ThumbnailFetcher
+	f routing.ThumbnailFetcher
 }
 
-func NewGRPCThumbnailService(f ThumbnailFetcher) *GRPCThumbnailService {
-	return &GRPCThumbnailService{
+func NewThumbnailService(f routing.ThumbnailFetcher) *ThumbnailService {
+	return &ThumbnailService{
 		f: f,
 	}
 }
 
-func (s *GRPCThumbnailService) ListThumbnail(ctx context.Context, req *proto.ListThumbnailRequest) (
+func (s *ThumbnailService) ListThumbnail(ctx context.Context, req *proto.ListThumbnailRequest) (
 	*proto.ListThumbnailResponse, error) {
 	resp, err := s.f.FetchThumbnailList(ctx, req)
 	respList := &proto.ListThumbnailResponse{
@@ -29,25 +29,25 @@ func (s *GRPCThumbnailService) ListThumbnail(ctx context.Context, req *proto.Lis
 	}
 
 	if err != nil { // requires respList isn't nil
-		slog.Info("Requested:", attrs.Any(req.String()))
-		slog.Error("User have no respond", attrs.Err(err))
+		slog.Info("Requested:", req.String())
+		slog.Error("User didn't get any response", err)
 		return nil, err
 	}
 
-	slog.Info("Message succesfully sent", attrs.Any(GetResponseStat(resp...)))
+	slog.Info("ListResponse succesfully sent", GetResponseStat(resp...))
 	return respList, err
 }
 
-func (s *GRPCThumbnailService) GetThumbnail(ctx context.Context, req *proto.GetThumbnailRequest) (
+func (s *ThumbnailService) GetThumbnail(ctx context.Context, req *proto.GetThumbnailRequest) (
 	*proto.ThumbnailResponse, error) {
 	resp, err := s.f.FetchThumbnail(ctx, req)
 
 	if err != nil { // requires resp isn't nil
-		slog.Info("Requested:", attrs.Any(req.String()))
-		slog.Error("User have no respond", attrs.Err(err))
+		slog.Info("Requested:", req.String())
+		slog.Error("User didn't get any response", err)
 		return nil, err
 	}
 
-	slog.Info("Message sent succesfully", attrs.Any(GetResponseStat(resp)))
+	slog.Info("Response sent succesfully", GetResponseStat(resp))
 	return resp, err
 }
