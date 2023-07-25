@@ -3,7 +3,6 @@ package youtube
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -13,44 +12,56 @@ import (
 	"github.com/fluxx1on/thumbnails_microservice/external/serial"
 	"github.com/fluxx1on/thumbnails_microservice/internal/grpc/proto"
 	"github.com/fluxx1on/thumbnails_microservice/libs/utils"
+	"golang.org/x/exp/slog"
 )
 
 var (
 	curDir        = "/external/youtube"
 	timeout       = 15 * time.Second
-	baseVideosUrl = "https://youtube.googleapis.com/youtube/v3/videos?part=snippet"
+	baseVideosURL = "https://youtube.googleapis.com/youtube/v3/videos?part=snippet"
 )
 
-type YouTubeAPIClient struct {
+type API interface {
+	GetVideos(...string) *serial.ListVideoSerializer
+	GetThumbnails(context.Context, ...string) []serial.ThumbnailData
+	GetVideoThumbnail(context.Context, ...string) ([]*proto.ThumbnailResponse, []string)
+}
+
+var _ API = (*APIClient)(nil)
+
+type APIClient struct {
 	httpClient *http.Client
 	cfg        *config.YouTubeAPI
 }
 
-func NewYouTubeAPIClient(YouTubeCfg *config.YouTubeAPI) *YouTubeAPIClient {
+func NewAPIClient(YouTubeCfg *config.YouTubeAPI) *APIClient {
 	httpClient := &http.Client{}
 
-	return &YouTubeAPIClient{
+	return &APIClient{
 		cfg:        YouTubeCfg,
 		httpClient: httpClient,
 	}
 }
 
-func (y *YouTubeAPIClient) getUrl(videoId ...string) string {
+func (y *APIClient) GetURL(videoID ...string) string {
 	builder := &strings.Builder{}
 
-	builder.WriteString(baseVideosUrl)
-	for _, str := range videoId {
+	builder.WriteString(baseVideosURL)
+	for _, str := range videoID {
 		builder.WriteString("&id=" + str)
 	}
 
 	return builder.String() + "&key=" + y.cfg.APIKey
 }
 
-func (y *YouTubeAPIClient) getVideos(videoId ...string) (*serial.ListVideoSerializer, error) {
+func (y *APIClient) GetVideos(videoID ...string) *serial.ListVideoSerializer {
+	var URL = y.GetURL(videoID...)
+
 	// Make request
-	req, err := http.NewRequest("GET", y.getUrl(videoId...), nil)
+	req, err := http.NewRequest("GET", URL, nil)
 	if err != nil {
-		return nil, err
+		slog.Error("Unknown", err, curDir)
+		return nil
 	}
 
 	// Headers
@@ -59,40 +70,46 @@ func (y *YouTubeAPIClient) getVideos(videoId ...string) (*serial.ListVideoSerial
 	// Get response
 	resp, err := y.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("youtube no respond: %w", err)
+		slog.Error("YouTube no respond", err, curDir)
+		return nil
 	}
 	defer resp.Body.Close()
 
 	// Check the response status code
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("youtube request failed: %d ... %s", resp.StatusCode, curDir)
+		slog.Error("YouTube request failed", resp.StatusCode, curDir)
+		return nil
 	}
 
 	// Deserializing response.Body
 	var videos serial.ListVideoSerializer
 	err = json.NewDecoder(resp.Body).Decode(&videos)
-	if err != nil || videos.Items == nil {
-		return nil, fmt.Errorf("error while decoding: %w / %s", err, y.getUrl(videoId...))
+	if err != nil || videos.IsEmpty() {
+		slog.Debug("Errors while decoding", URL)
+		return nil
 	}
 
-	return &videos, nil
+	return &videos
 }
 
-func (y *YouTubeAPIClient) getThumbnails(ctx context.Context, imageUrl ...string) ([]serial.ThumbnailData, error) {
+func (y *APIClient) GetThumbnails(ctx context.Context, imageURL ...string) []serial.ThumbnailData {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var (
 		wg            sync.WaitGroup
-		thumbnailList = make([]serial.ThumbnailData, 0, len(imageUrl))
+		thumbnailList = make([]serial.ThumbnailData, 0, len(imageURL))
 	)
 
-	for _, url := range imageUrl {
+	for _, url := range imageURL {
 		wg.Add(1)
 		go func(ctx context.Context, url string) {
 			defer wg.Done()
 
-			thumbnail, _ := GetImage(url)
+			thumbnail, err := GetImage(url)
+			if err != nil { // requires that thumbnail is nil
+				slog.Debug("Bad response from YT API", err)
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -106,37 +123,42 @@ func (y *YouTubeAPIClient) getThumbnails(ctx context.Context, imageUrl ...string
 
 	// Some thumbnails didn't download. Error needs to be provided to user.
 	if ctx.Err() != nil {
-		return thumbnailList, fmt.Errorf("request timeout")
+		slog.Error("Request timeout", ctx.Err(), curDir)
+		return nil
 	}
 
 	// Clear downloading
-	return thumbnailList, nil
+	return thumbnailList
 }
 
 // GetVideoThumbnail gets videos meta data and thumbnails
-func (y *YouTubeAPIClient) GetVideoThumbnail(ctx context.Context, videoId ...string) (
-	[]*proto.ThumbnailResponse, []string, error) {
+func (y *APIClient) GetVideoThumbnail(ctx context.Context, videoID ...string) (
+	[]*proto.ThumbnailResponse, []string) {
+	if len(videoID) == 0 {
+		return nil, nil
+	}
+
 	var (
-		errListId             []string
+		errListID             []string
 		thumbnailResponseList []*proto.ThumbnailResponse
 	)
 
-	videos, err := y.getVideos(videoId...)
-	if err != nil { // requires that videos not nil
-		return nil, videoId, err
+	videos := y.GetVideos(videoID...)
+	if videos == nil { // requires that videos are not nil
+		return nil, videoID
 	}
 
-	var imageUrls = make([]string, 0, len(videos.Items))
+	imageUrls := make([]string, 0, len(videos.Items))
 	for _, item := range videos.Items {
 		imageUrls = append(imageUrls, item.GetUrl())
 	}
 
-	thumbnails, err := y.getThumbnails(ctx, imageUrls...)
-	if err != nil {
-		return nil, videoId, err
+	thumbnails := y.GetThumbnails(ctx, imageUrls...)
+	if thumbnails == nil { // requires that thumbnails are not nil
+		return nil, videoID
 	}
 
-	for i := range videoId {
+	for i := range videoID {
 		if i < len(videos.Items) && thumbnails[i] != nil {
 			video := &serial.Video{
 				I:    &videos.Items[i],
@@ -145,38 +167,9 @@ func (y *YouTubeAPIClient) GetVideoThumbnail(ctx context.Context, videoId ...str
 			newThumbnail := utils.NewThumbnailResponse(video)
 			thumbnailResponseList = append(thumbnailResponseList, newThumbnail)
 		} else {
-			errListId = append(errListId, videoId[i])
+			errListID = append(errListID, videoID[i])
 		}
 	}
 
-	return thumbnailResponseList, errListId, nil
+	return thumbnailResponseList, errListID
 }
-
-// func (y *YouTubeAPIClient) GetVideoThumbnailParralel(ctx context.Context, poolVideoId ...string) ([]*proto.ThumbnailResponse, error) {
-// 	ctx, cancel := context.WithTimeout(ctx, timeout)
-// 	defer cancel()
-
-// 	var (
-// 		wg            sync.WaitGroup
-// 		thumbnailList = make([]*proto.ThumbnailResponse, 0, len(poolVideoId))
-// 	)
-
-// 	for _, videoId := range poolVideoId {
-// 		wg.Add(1)
-// 		go func(ctx context.Context, videoId string) {
-// 			defer wg.Done()
-
-// 			thumbnailResponse := y.GetVideoThumbnail(ctx, videoId)
-// 			select {
-// 			case <-ctx.Done():
-// 				return
-// 			default:
-// 				thumbnailList = append(thumbnailList, thumbnailResponse)
-// 			}
-// 		}(ctx, videoId)
-// 	}
-
-// 	wg.Wait()
-
-// 	return thumbnailList, nil
-// }

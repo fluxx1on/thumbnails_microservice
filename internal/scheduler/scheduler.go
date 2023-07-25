@@ -3,11 +3,9 @@ package scheduler
 import (
 	"context"
 
+	"github.com/fluxx1on/thumbnails_microservice/internal/cache"
 	"github.com/fluxx1on/thumbnails_microservice/internal/grpc/proto"
-	"github.com/fluxx1on/thumbnails_microservice/libs/cache"
-	"github.com/fluxx1on/thumbnails_microservice/libs/logger/attrs"
 	"github.com/fluxx1on/thumbnails_microservice/libs/utils"
-	"github.com/go-redis/redis"
 	"golang.org/x/exp/slog"
 )
 
@@ -15,8 +13,14 @@ var (
 	curDir = "/internal/scheduler"
 )
 
+// type TaskQueue interface {
+// 	PutCache([]*proto.Thumbnail)
+// }
+
+// var _ TaskQueue = (*CacheQueue)(nil)
+
 type CacheQueue struct {
-	CacheClient *redis.Client
+	cacheClient cache.Cache
 
 	// Queue is like task queue/schedule from broker
 	queue chan []*proto.Thumbnail
@@ -28,21 +32,28 @@ type CacheQueue struct {
 	ctxCancel context.CancelFunc
 }
 
-func NewCacheQueue(ctx context.Context, Redis *redis.Client) *CacheQueue {
+func NewCacheQueue(ctx context.Context, cacheClient *cache.RedisQuery) *CacheQueue {
 	ctx, cancel := context.WithCancel(ctx)
 
 	return &CacheQueue{
-		CacheClient: Redis,
+		cacheClient: cacheClient,
 		queue:       make(chan []*proto.Thumbnail, 100),
 		ctx:         ctx,
 		ctxCancel:   cancel,
 	}
 }
 
-// putCache inspect that slice doesn't contain same video multiple times.
+func (q *CacheQueue) GetCacheClient() *cache.RedisQuery {
+	if cli, is := q.cacheClient.(*cache.RedisQuery); is {
+		return cli
+	}
+	return nil
+}
+
+// PutCache inspect that slice doesn't contain same video multiple times.
 // So after inspection putCache provide video meta data to redis
 // and thumbnail image to filesystem.
-func (q *CacheQueue) putCache(thumbResp []*proto.Thumbnail) {
+func (q *CacheQueue) PutCache(thumbResp []*proto.Thumbnail) {
 	var (
 		thumbList = make([]*proto.Thumbnail, 0, len(thumbResp))
 		dict      = make(map[string]int, len(thumbResp))
@@ -54,12 +65,12 @@ func (q *CacheQueue) putCache(thumbResp []*proto.Thumbnail) {
 
 	for key, val := range dict {
 		if err := utils.WriteMediaFile(thumbResp[val].GetFile(), key); err != nil {
-			slog.Warn("Writing image file denied", attrs.Err(err), attrs.Any(curDir))
+			slog.Warn("Writing image file denied", err, curDir)
 		}
 		thumbList = append(thumbList, thumbResp[val])
 	}
 
-	cache.SetVideoPool(q.CacheClient, thumbList...)
+	q.GetCacheClient().SetSeries(q.ctx, thumbList...)
 
 	slog.Debug("All files were written succesfully")
 }
@@ -75,7 +86,7 @@ func (q *CacheQueue) JobRunning() {
 	for {
 		select {
 		case thumb := <-q.queue:
-			q.putCache(thumb)
+			q.PutCache(thumb)
 		case <-q.ctx.Done():
 			return
 		}
