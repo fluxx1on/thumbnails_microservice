@@ -39,3 +39,8 @@ build:
 
 run: build
 	./bin/server
+
+docker-image:
+	docker build -t thumbnail:v1 .
+	docker run -d --name redis_host --network microservice_network redis
+	docker run -d -p 50051:50051 --name thumbnails_service -e REDIS_ADDRESS="172.18.0.2:6379" -e SERVER_ADDRESS="0.0.0.0:50051" --network microservice_network thumbnail:v1
